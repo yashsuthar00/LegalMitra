@@ -170,10 +170,41 @@ export default function AnalysisResults({ analysis }) {
       {analysis.metadata && (
         <div className="bg-gray-50 dark:bg-gray-700 rounded-xl p-4">
           <h4 className="font-medium text-gray-700 dark:text-gray-300 mb-2">Analysis Details</h4>
-          <div className="text-xs text-gray-500 dark:text-gray-400 grid grid-cols-1 md:grid-cols-3 gap-2">
-            <div>📄 Text Length: {analysis.metadata.textLength} characters</div>
-            <div>🤖 Model: {analysis.metadata.model}</div>
-            <div>⏰ Analyzed: {new Date(analysis.metadata.analyzedAt).toLocaleString()}</div>
+          <div className="text-xs text-gray-500 dark:text-gray-400 space-y-2">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
+              <div>📄 Content Length: {analysis.metadata.contentLength} characters</div>
+              <div>🤖 Model: {analysis.metadata.model}</div>
+              <div>⏰ Analyzed: {new Date(analysis.metadata.analyzedAt).toLocaleString()}</div>
+            </div>
+            {analysis.metadata.sourceType === 'url' && (
+              <div className="border-t border-gray-200 dark:border-gray-600 pt-2 mt-2">
+                <div className="space-y-1">
+                  <div className="flex items-start gap-2">
+                    <span className="text-blue-600">🔗 Source URL:</span>
+                    <a 
+                      href={analysis.metadata.sourceUrl} 
+                      target="_blank" 
+                      rel="noopener noreferrer"
+                      className="text-blue-600 hover:text-blue-800 underline break-all"
+                    >
+                      {analysis.metadata.sourceUrl}
+                    </a>
+                  </div>
+                  {analysis.metadata.pageTitle && (
+                    <div>
+                      <span className="text-gray-600 dark:text-gray-400">📝 Page Title:</span>
+                      <span className="ml-1">{analysis.metadata.pageTitle}</span>
+                    </div>
+                  )}
+                  {analysis.metadata.pageDescription && (
+                    <div>
+                      <span className="text-gray-600 dark:text-gray-400">📄 Description:</span>
+                      <span className="ml-1">{analysis.metadata.pageDescription}</span>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}
