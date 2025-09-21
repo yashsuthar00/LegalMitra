@@ -1,25 +1,20 @@
 'use client';
 
 import { useState } from 'react';
-import { FileText, Type, Globe, Link, Info, CheckCircle, Zap } from 'lucide-react';
+import { AlertTriangle, FileText, Loader2, CheckCircle, XCircle, Info, Link, Type, Globe } from 'lucide-react';
 import EnhancedAnalysisResults from './EnhancedAnalysisResults';
 
 export default function LegalTextAnalyzer() {
+  const [activeTab, setActiveTab] = useState('text'); // 'text' or 'url'
   const [text, setText] = useState('');
   const [url, setUrl] = useState('');
-  const [analysis, setAnalysis] = useState(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [analysis, setAnalysis] = useState(null);
   const [error, setError] = useState(null);
-  const [activeTab, setActiveTab] = useState('text');
 
   const handleAnalyzeText = async () => {
     if (!text.trim()) {
-      setError('Please enter some text to analyze');
-      return;
-    }
-
-    if (text.trim().length < 50) {
-      setError('Please enter at least 50 characters for meaningful analysis');
+      setError('Please enter some legal text to analyze');
       return;
     }
 
@@ -291,42 +286,104 @@ export default function LegalTextAnalyzer() {
             </div>
           </div>
         </div>
+                Clear
+              </button>
+              <button
+                onClick={handleAnalyze}
+                disabled={isAnalyzing || !canAnalyze}
+                className="px-8 py-2.5 bg-gradient-to-r from-blue-600 to-blue-700 hover:from-blue-700 hover:to-blue-800 text-white rounded-xl font-semibold disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 shadow-lg hover:shadow-xl transition-all duration-200"
+              >
+                {isAnalyzing ? (
+                  <>
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    Analyzing {activeTab === 'text' ? 'Text' : 'URL'}...
+                  </>
+                ) : (
+                  <>
+                    <FileText className="h-4 w-4" />
+                    Analyze {activeTab === 'text' ? 'Text' : 'URL'}
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
 
-        {/* Sample Text Button */}
-        {activeTab === 'text' && (
-          <div className="mt-6 text-center">
-            <button
-              onClick={() => setText(sampleText)}
-              disabled={isAnalyzing}
-              className="text-blue-600 dark:text-blue-400 hover:text-blue-800 dark:hover:text-blue-300 text-sm font-medium underline disabled:opacity-50 transition-colors"
-            >
-              📝 Load Sample Rental Agreement
-            </button>
+        {/* Error Display */}
+        {error && (
+          <div className="mt-6 p-4 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-xl flex items-start gap-3">
+            <XCircle className="h-5 w-5 text-red-600 mt-0.5 flex-shrink-0" />
+            <div>
+              <h3 className="font-semibold text-red-800 dark:text-red-200">Analysis Error</h3>
+              <p className="text-red-700 dark:text-red-300">{error}</p>
+              {error.includes('suggestion') && (
+                <p className="text-red-600 dark:text-red-400 text-sm mt-1">
+                  💡 {error.split('suggestion: ')[1]}
+                </p>
+              )}
+            </div>
           </div>
         )}
       </div>
 
-      {/* Error Display */}
-      {error && (
-        <div className="mb-8 p-4 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-800 rounded-2xl">
-          <div className="flex items-center gap-3">
-            <div className="p-2 bg-red-100 dark:bg-red-900/40 rounded-lg">
-              <Info className="h-5 w-5 text-red-600 dark:text-red-400" />
-            </div>
-            <div>
-              <h3 className="font-semibold text-red-800 dark:text-red-200">Analysis Error</h3>
-              <p className="text-red-700 dark:text-red-300 text-sm">{error}</p>
-            </div>
+      {/* Analysis Results */}
+      {analysis && <EnhancedAnalysisResults analysis={analysis} />}
+
+      {/* Sample Content for Testing */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+        {/* Sample Text */}
+        <div className="bg-gradient-to-br from-gray-50 to-gray-100 dark:from-gray-800 dark:to-gray-700 rounded-xl p-6 border border-gray-200 dark:border-gray-600">
+          <h3 className="font-bold text-gray-800 dark:text-white mb-3 flex items-center gap-2">
+            <Type className="h-5 w-5 text-blue-600" />
+            Try Sample Text
+          </h3>
+          <p className="text-gray-600 dark:text-gray-300 text-sm mb-4">
+            Test the analyzer with a sample rental agreement containing various concerning clauses:
+          </p>
+          <button
+            onClick={() => {
+              setActiveTab('text');
+              setText(sampleText);
+              setError(null);
+              setAnalysis(null);
+            }}
+            disabled={isAnalyzing}
+            className="inline-flex items-center gap-2 text-blue-600 hover:text-blue-800 text-sm font-semibold disabled:opacity-50 transition-colors"
+          >
+            <FileText className="h-4 w-4" />
+            Load Sample Rental Agreement
+          </button>
+        </div>
+
+        {/* Sample URLs */}
+        <div className="bg-gradient-to-br from-blue-50 to-indigo-100 dark:from-blue-900/20 dark:to-indigo-900/20 rounded-xl p-6 border border-blue-200 dark:border-blue-800">
+          <h3 className="font-bold text-gray-800 dark:text-white mb-3 flex items-center gap-2">
+            <Globe className="h-5 w-5 text-blue-600" />
+            Try Sample URLs
+          </h3>
+          <p className="text-gray-600 dark:text-gray-300 text-sm mb-4">
+            Test with real privacy policies and terms of service:
+          </p>
+          <div className="space-y-2">
+            {sampleUrls.map((sampleUrl, index) => (
+              <button
+                key={index}
+                onClick={() => {
+                  setActiveTab('url');
+                  setUrl(sampleUrl.url);
+                  setError(null);
+                  setAnalysis(null);
+                }}
+                disabled={isAnalyzing}
+                className="block w-full text-left text-blue-600 hover:text-blue-800 text-sm font-medium disabled:opacity-50 transition-colors hover:bg-blue-50 dark:hover:bg-blue-900/30 p-2 rounded"
+              >
+                <Link className="h-3 w-3 inline mr-2" />
+                {sampleUrl.name}
+              </button>
+            ))}
           </div>
         </div>
-      )}
-
-      {/* Analysis Results */}
-      {analysis && (
-        <div className="mt-8">
-          <EnhancedAnalysisResults analysis={analysis} />
-        </div>
-      )}
+      </div>
     </div>
   );
 }
