@@ -3,396 +3,361 @@ import { NextResponse } from 'next/server';
 import axios from 'axios';
 import * as cheerio from 'cheerio';
 import validator from 'validator';
-import URL from 'url-parse';
 
-// Initialize Google Gemini AI
-const genAI = new GoogleGenerativeAI(process.env.GOOGLE_API_KEY);
+// Initialize the Gemini AI
+const genAI = new GoogleGenerativeAI(process.env.GOOGLE_AI_API_KEY);
 
-// List of suspicious domains and patterns to avoid
-const BLOCKED_DOMAINS = [
-  'bit.ly', 'tinyurl.com', 'goo.gl', 't.co', // URL shorteners
-  'localhost', '127.0.0.1', '0.0.0.0', // Local addresses
-];
+// Security configuration
+const SECURITY_CONFIG = {
+  maxContentLength: 500000, // 500KB limit
+  maxRedirects: 3,
+  timeout: 15000, // 15 seconds
+  allowedDomains: [], // Empty means all domains allowed, but we'll validate content
+  blockedDomains: [
+    'localhost',
+    '127.0.0.1',
+    '0.0.0.0',
+    '192.168.',
+    '10.',
+    '172.',
+    'malware',
+    'phishing'
+  ],
+  allowedContentTypes: [
+    'text/html',
+    'text/plain',
+    'application/json'
+  ]
+};
 
-const MALICIOUS_PATTERNS = [
-  /malware/i, /virus/i, /phishing/i, /spam/i, /scam/i,
-  /download\s+now/i, /click\s+here/i, /free\s+money/i
-];
+// Helper function to validate URL
+function validateUrl(url) {
+  try {
+    // Check if it's a valid URL format
+    if (!validator.isURL(url, { 
+      protocols: ['http', 'https'],
+      require_protocol: true 
+    })) {
+      return { valid: false, error: 'Invalid URL format' };
+    }
+
+    const urlObj = new URL(url);
+    
+    // Check for blocked domains
+    const hostname = urlObj.hostname.toLowerCase();
+    for (const blocked of SECURITY_CONFIG.blockedDomains) {
+      if (hostname.includes(blocked)) {
+        return { valid: false, error: 'Domain not allowed for security reasons' };
+      }
+    }
+    
+    // Check for private/local IP addresses
+    if (hostname.match(/^(10\.|172\.(1[6-9]|2[0-9]|3[01])\.|192\.168\.|127\.|0\.0\.0\.0|localhost)$/)) {
+      return { valid: false, error: 'Private/local URLs are not allowed' };
+    }
+
+    return { valid: true };
+  } catch (error) {
+    return { valid: false, error: 'Invalid URL' };
+  }
+}
+
+// Helper function to safely fetch content
+async function fetchContent(url) {
+  try {
+    const response = await axios.get(url, {
+      timeout: SECURITY_CONFIG.timeout,
+      maxRedirects: SECURITY_CONFIG.maxRedirects,
+      maxContentLength: SECURITY_CONFIG.maxContentLength,
+      headers: {
+        'User-Agent': 'LegalMitra-Bot/1.0 (Legal Document Analyzer)',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.5',
+        'Accept-Encoding': 'gzip, deflate',
+        'DNT': '1',
+        'Connection': 'keep-alive',
+      },
+      validateStatus: (status) => status < 400,
+    });
+
+    // Validate content type
+    const contentType = response.headers['content-type']?.toLowerCase() || '';
+    const isValidContentType = SECURITY_CONFIG.allowedContentTypes.some(type => 
+      contentType.includes(type)
+    );
+    
+    if (!isValidContentType) {
+      throw new Error('Content type not supported for analysis');
+    }
+
+    return {
+      content: response.data,
+      contentType,
+      size: response.data.length,
+      status: response.status
+    };
+  } catch (error) {
+    if (error.code === 'ENOTFOUND') {
+      throw new Error('Website not found. Please check the URL and try again.');
+    } else if (error.code === 'ECONNREFUSED') {
+      throw new Error('Connection refused. The website may be down.');
+    } else if (error.code === 'ETIMEDOUT') {
+      throw new Error('Request timed out. The website is taking too long to respond.');
+    } else if (error.response?.status === 403) {
+      throw new Error('Access forbidden. The website blocks automated requests.');
+    } else if (error.response?.status === 404) {
+      throw new Error('Page not found. Please check the URL.');
+    } else if (error.response?.status >= 500) {
+      throw new Error('The website is experiencing server issues. Please try again later.');
+    }
+    throw error;
+  }
+}
+
+// Helper function to extract text content
+function extractTextContent(html, url) {
+  try {
+    const $ = cheerio.load(html);
+    
+    // Remove unwanted elements
+    $('script, style, nav, header, footer, aside, .ad, .advertisement, .popup, .modal').remove();
+    
+    // Try to find main content areas
+    const contentSelectors = [
+      'main',
+      '[role="main"]',
+      '.main-content',
+      '.content',
+      '.legal-content',
+      '.terms',
+      '.privacy',
+      '.policy',
+      'article',
+      '.document'
+    ];
+    
+    let content = '';
+    let title = $('title').text().trim();
+    
+    // Try content selectors first
+    for (const selector of contentSelectors) {
+      const element = $(selector);
+      if (element.length > 0 && element.text().trim().length > 100) {
+        content = element.text().trim();
+        break;
+      }
+    }
+    
+    // Fallback to body if no specific content area found
+    if (!content || content.length < 100) {
+      content = $('body').text().trim();
+    }
+    
+    // Clean up the content
+    content = content
+      .replace(/\s+/g, ' ')
+      .replace(/\n\s*\n/g, '\n')
+      .trim();
+    
+    return {
+      content,
+      title,
+      length: content.length
+    };
+  } catch (error) {
+    throw new Error('Failed to extract content from the webpage');
+  }
+}
 
 export async function POST(request) {
   try {
     const { url } = await request.json();
 
-    // Validate input
-    if (!url || typeof url !== 'string' || url.trim().length === 0) {
+    if (!url || typeof url !== 'string') {
       return NextResponse.json(
-        { error: 'Please provide a valid URL to analyze' },
+        { error: 'URL is required and must be a string' },
+        { status: 400 }
+      );
+    }
+
+    // Validate URL
+    const validation = validateUrl(url.trim());
+    if (!validation.valid) {
+      return NextResponse.json(
+        { error: validation.error },
         { status: 400 }
       );
     }
 
     // Check if API key is configured
-    if (!process.env.GOOGLE_API_KEY) {
+    if (!process.env.GOOGLE_AI_API_KEY) {
       return NextResponse.json(
-        { error: 'Google Gemini API key is not configured' },
+        { error: 'Google AI API key is not configured' },
         { status: 500 }
       );
     }
 
-    const cleanUrl = url.trim();
-
-    // Basic URL validation
-    if (!validator.isURL(cleanUrl, {
-      protocols: ['http', 'https'],
-      require_protocol: true,
-      require_valid_protocol: true,
-      allow_underscores: false,
-      allow_trailing_dot: false,
-      allow_protocol_relative_urls: false
-    })) {
-      return NextResponse.json(
-        { error: 'Please provide a valid HTTP or HTTPS URL' },
-        { status: 400 }
-      );
-    }
-
-    // Parse URL for additional security checks
-    const parsedUrl = new URL(cleanUrl);
+    console.log(`Fetching content from: ${url}`);
     
-    // Check for blocked domains
-    const domain = parsedUrl.hostname.toLowerCase();
-    if (BLOCKED_DOMAINS.some(blocked => domain.includes(blocked))) {
-      return NextResponse.json(
-        { error: 'This domain is not allowed for security reasons' },
-        { status: 400 }
-      );
-    }
-
-    // Check for suspicious patterns in URL
-    if (MALICIOUS_PATTERNS.some(pattern => pattern.test(cleanUrl))) {
-      return NextResponse.json(
-        { error: 'This URL appears suspicious and cannot be analyzed' },
-        { status: 400 }
-      );
-    }
-
-    let scrapedContent;
-    let pageTitle = '';
-    let pageDescription = '';
-
-    try {
-      // Fetch the webpage with security headers and timeout
-      const response = await axios.get(cleanUrl, {
-        timeout: 10000, // 10 second timeout
-        maxRedirects: 3,
-        headers: {
-          'User-Agent': 'LegalMitra-Bot/1.0 (Legal Document Analyzer)',
-          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-          'Accept-Language': 'en-US,en;q=0.5',
-          'Accept-Encoding': 'gzip, deflate',
-          'Connection': 'keep-alive',
-          'Upgrade-Insecure-Requests': '1',
-        },
-        maxContentLength: 5 * 1024 * 1024, // 5MB limit
-      });
-
-      // Check content type
-      const contentType = response.headers['content-type'] || '';
-      if (!contentType.includes('text/html') && !contentType.includes('text/plain')) {
-        return NextResponse.json(
-          { error: 'This URL does not contain readable text content' },
-          { status: 400 }
-        );
-      }
-
-      // Parse HTML content
-      const $ = cheerio.load(response.data);
-      
-      // Get page title and description
-      pageTitle = $('title').text().trim() || '';
-      pageDescription = $('meta[name="description"]').attr('content') || 
-                      $('meta[property="og:description"]').attr('content') || '';
-
-      // Remove script, style, and other non-content elements
-      $('script, style, nav, header, footer, aside, .advertisement, .ads, .social-media').remove();
-      
-      // Extract main content
-      let mainContent = '';
-      
-      // Try to find main content areas
-      const contentSelectors = [
-        'main', '[role="main"]', '.main-content', '.content', '.post-content',
-        '.article-content', '.entry-content', '.page-content', '.terms', '.privacy-policy',
-        '.legal', '.agreement', '.contract', '.policy', 'article', '.document'
-      ];
-      
-      for (const selector of contentSelectors) {
-        const content = $(selector).text().trim();
-        if (content && content.length > mainContent.length) {
-          mainContent = content;
-        }
-      }
-      
-      // Fallback to body content if no main content found
-      if (!mainContent || mainContent.length < 100) {
-        mainContent = $('body').text().trim();
-      }
-      
-      // Clean up the text
-      scrapedContent = mainContent
-        .replace(/\s+/g, ' ') // Replace multiple whitespace with single space
-        .replace(/\n\s*\n/g, '\n') // Remove empty lines
-        .trim();
-      
-      console.log(`Scraped content length: ${scrapedContent.length} characters`);
-      // Check if we got meaningful content
-      if (!scrapedContent || scrapedContent.length < 50) {
-        return NextResponse.json(
-          { error: 'Could not extract sufficient text content from this URL' },
-          { status: 400 }
-        );
-      }
-
-      // Limit content length for processing
-      if (scrapedContent.length > 50000) {
-        scrapedContent = scrapedContent.substring(0, 50000) + '... [Content truncated for analysis]';
-      }
-
-    } catch (fetchError) {
-      console.error('Error fetching URL:', fetchError);
-      
-      if (fetchError.code === 'ENOTFOUND') {
-        return NextResponse.json(
-          { error: 'URL not found. Please check the URL and try again.' },
-          { status: 400 }
-        );
-      } else if (fetchError.code === 'ECONNREFUSED') {
-        return NextResponse.json(
-          { error: 'Connection refused. The website may be down or blocking requests.' },
-          { status: 400 }
-        );
-      } else if (fetchError.response?.status === 403) {
-        return NextResponse.json(
-          { error: 'Access forbidden. The website is blocking our analysis tool.' },
-          { status: 400 }
-        );
-      } else if (fetchError.response?.status === 404) {
-        return NextResponse.json(
-          { error: 'Page not found (404). Please check the URL.' },
-          { status: 400 }
-        );
-      } else {
-        return NextResponse.json(
-          { error: 'Failed to fetch the webpage. Please try again or check if the URL is accessible.' },
-          { status: 400 }
-        );
-      }
-    }
-
-    // First, check if the content is legal-related using AI
-    const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash-exp' });
+    // Fetch and extract content
+    const fetchResult = await fetchContent(url.trim());
+    const extracted = extractTextContent(fetchResult.content, url);
     
+    console.log(`Scraped content length: ${extracted.length} characters`);
+    
+    if (extracted.length < 100) {
+      return NextResponse.json(
+        { error: 'Not enough content found on the webpage to analyze' },
+        { status: 400 }
+      );
+    }
+
+    const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash-exp" });
+
+    // First, validate that this is actually legal content
     const contentValidationPrompt = `
-You are a strict legal document classifier. Your job is to determine if content is actually a legal document or legal agreement.
+You are a content validator. Analyze the following text and determine if it contains legal content that should be analyzed.
 
-Analyze this content and determine if it contains actual legal terms, agreements, policies, or contracts:
+Content to validate:
+"""
+${extracted.content.substring(0, 3000)}
+"""
 
-Content Title: "${pageTitle}"
-Content Description: "${pageDescription}"
-Content Sample: "${scrapedContent.substring(0, 2000)}"
+Respond with EXACTLY one word:
+- "LEGAL" if the content contains legal documents, terms of service, privacy policies, contracts, agreements, legal notices, or other legal text that regular people might need to understand
+- "NOT_LEGAL" if the content is clearly not legal in nature (like news articles, blog posts, product pages, etc.)
 
-STRICT CRITERIA FOR LEGAL CONTENT:
-✅ LEGAL content must contain:
-- Terms of Service, Privacy Policy, User Agreement, EULA
-- Rental agreements, Employment contracts, Service contracts
-- Legal notices, Disclaimers, License agreements, Terms and Conditions
-- Court documents, Legal forms, Compliance documents
-- Cookie policies, Data processing agreements
-- Software licenses, Terms of Use
-
-❌ NOT LEGAL content includes:
-- News articles, Blog posts, Product descriptions, Marketing pages
-- Social media posts, Personal websites, Entertainment content
-- Technical documentation, Help pages, FAQs
-- Company about pages, Contact pages, General website content
-- Product catalogs, Shopping pages, General informational content
-
-IMPORTANT: Only respond with exactly "LEGAL" if the content clearly contains binding legal terms, agreements, or policies that users would need to accept or be bound by. If you have ANY doubt or if it's just general website content, respond with "NOT_LEGAL".
-
-Response (LEGAL or NOT_LEGAL):`;
+Response:`;
 
     try {
       const validationResult = await model.generateContent(contentValidationPrompt);
       const validationResponse = await validationResult.response;
       const responseText = validationResponse.text().trim().toUpperCase();
       const isLegal = responseText.includes('LEGAL') && !responseText.includes('NOT_LEGAL');
-
+      
       console.log('Content validation response:', responseText);
-
+      
       if (!isLegal) {
-        return NextResponse.json(
-          { 
-            error: 'This URL does not contain legal document content. Please provide a link to legal documents such as Terms of Service, Privacy Policy, User Agreement, or other legal contracts.',
-            suggestion: 'Valid examples: Privacy policies, Terms of service, User agreements, Software licenses, Employment contracts, Rental agreements, or Legal disclaimers.'
-          },
-          { status: 400 }
-        );
+        return NextResponse.json({
+          error: 'Non-legal content detected',
+          message: 'The URL you provided does not appear to contain legal documents or terms that can be analyzed. Please provide a URL to privacy policies, terms of service, contracts, or other legal documents.',
+          suggestion: 'Try URLs like privacy policies, terms of service, user agreements, or legal contracts.'
+        }, { status: 400 });
       }
     } catch (validationError) {
       console.error('Content validation error:', validationError);
-      // Continue with analysis if validation fails, but add extra validation in main prompt
+      // If validation fails, we'll proceed but with a warning
     }
 
-    // Now analyze the legal content with enhanced validation
+    // Main analysis prompt
     const analysisPrompt = `
-You are a legal document analysis AI assistant. IMPORTANT: You must first verify that the provided content is actually a legal document before proceeding with analysis.
+You are a legal document analysis expert. Analyze the following legal document from a website and provide a comprehensive breakdown that helps ordinary people understand what they're agreeing to.
 
-Website URL: ${cleanUrl}
-Page Title: ${pageTitle}
-Page Description: ${pageDescription}
+Website URL: ${url}
+Page Title: ${extracted.title}
+Content:
+"""
+${extracted.content}
+"""
 
-Content to Analyze:
-"${scrapedContent}"
+Please provide your analysis in the following JSON format:
 
-CRITICAL INSTRUCTION: Before analyzing, you must determine if this content is actually a legal document (Terms of Service, Privacy Policy, Contract, Agreement, etc.). 
-
-If the content is NOT a legal document (like news articles, product descriptions, general website content, marketing material, etc.), you MUST respond with this exact JSON:
 {
-  "error": "NOT_LEGAL_CONTENT",
-  "message": "This content does not appear to be a legal document. Please provide a URL containing Terms of Service, Privacy Policy, User Agreement, or other legal documents."
-}
-
-ONLY if the content IS clearly a legal document, provide analysis in this JSON format:
-{
-  "riskLevel": "LOW" | "MEDIUM" | "HIGH",
-  "overallSummary": "A brief 2-3 sentence summary of the legal document",
+  "overallSummary": "Brief 2-3 sentence summary of what this document is about",
+  "riskLevel": "HIGH|MEDIUM|LOW",
+  "simplifiedExplanation": "Plain English explanation of what this document means for the person agreeing to it",
   "keyFindings": [
     {
-      "type": "FINANCIAL_RISK" | "LEGAL_OBLIGATION" | "PRIVACY_CONCERN" | "TERMINATION_CLAUSE" | "LIABILITY" | "OTHER",
-      "severity": "LOW" | "MEDIUM" | "HIGH",
       "title": "Brief title of the finding",
-      "description": "Detailed explanation of what this means for the user",
-      "recommendation": "What the user should do about this"
+      "description": "Detailed explanation of this clause or section",
+      "type": "FINANCIAL_RISK|LEGAL_OBLIGATION|PRIVACY_CONCERN|TERMINATION_CLAUSE|LIABILITY|OTHER",
+      "severity": "HIGH|MEDIUM|LOW",
+      "recommendation": "What the person should do about this"
     }
   ],
   "redFlags": [
-    "List of specific concerning clauses or terms that could be problematic"
+    "List of concerning clauses or terms that heavily favor one party"
   ],
   "positiveAspects": [
-    "List of favorable terms or protections for the user"
+    "List of protective clauses or favorable terms"
   ],
-  "simplifiedExplanation": "Explain the legal document in simple, everyday language that anyone can understand",
   "actionableAdvice": [
-    "Specific steps the user should take before agreeing to these terms"
-  ]
+    "Specific steps the person should take before agreeing"
+  ],
+  "metadata": {
+    "sourceType": "url",
+    "sourceUrl": "${url}",
+    "pageTitle": "${extracted.title}",
+    "contentLength": ${extracted.length},
+    "analyzedAt": "${new Date().toISOString()}",
+    "model": "gemini-2.0-flash-exp"
+  }
 }
 
-Focus on legal analysis of:
-- Financial obligations and penalties
-- Termination conditions and notice periods
-- Liability and responsibility clauses
-- Privacy and data usage terms
-- Automatic renewals or extensions
-- Dispute resolution mechanisms
-- Any unusual or potentially unfair terms
+Important guidelines:
+- Focus on practical implications for ordinary people
+- Highlight financial risks, hidden fees, and liability issues
+- Explain legal jargon in simple terms
+- Be thorough but concise
+- Prioritize the most important issues
+- Provide actionable recommendations
+`;
 
-DO NOT HALLUCINATE. If this is not a legal document, use the error response above.`;
-
-    // Generate the analysis
+    console.log('Sending analysis request to Gemini API...');
     const result = await model.generateContent(analysisPrompt);
     const response = await result.response;
     const analysisText = response.text();
 
-    // Try to parse JSON from the response
-    let analysis;
+    console.log('Raw Gemini response received');
+
+    // Try to extract JSON from the response
+    let analysisData;
     try {
-      // Extract JSON from the response (in case there's additional text)
-      const jsonMatch = analysisText.match(/\{[\s\S]*\}/);
-      if (jsonMatch) {
-        const parsedResponse = JSON.parse(jsonMatch[0]);
-        
-        // Check if AI detected non-legal content
-        if (parsedResponse.error === "NOT_LEGAL_CONTENT") {
-          return NextResponse.json(
-            { 
-              error: parsedResponse.message || 'This content does not appear to be a legal document. Please provide a URL containing Terms of Service, Privacy Policy, User Agreement, or other legal documents.',
-              suggestion: 'Valid examples: Privacy policies, Terms of service, User agreements, Software licenses, Employment contracts, Rental agreements, or Legal disclaimers.'
-            },
-            { status: 400 }
-          );
-        }
-        
-        analysis = parsedResponse;
-      } else {
-        throw new Error('No JSON found in response');
-      }
+      // Remove any markdown code block formatting
+      const cleanText = analysisText.replace(/```json\n?|\n?```/g, '').trim();
+      analysisData = JSON.parse(cleanText);
     } catch (parseError) {
-      // Check if the raw response indicates non-legal content
-      if (analysisText.toLowerCase().includes('not a legal document') || 
-          analysisText.toLowerCase().includes('not legal content') ||
-          analysisText.toLowerCase().includes('general website content')) {
-        return NextResponse.json(
-          { 
-            error: 'This content does not appear to be a legal document. Please provide a URL containing Terms of Service, Privacy Policy, User Agreement, or other legal documents.',
-            suggestion: 'Valid examples: Privacy policies, Terms of service, User agreements, Software licenses, Employment contracts, Rental agreements, or Legal disclaimers.'
-          },
-          { status: 400 }
-        );
-      }
+      console.error('Failed to parse JSON from Gemini response:', parseError);
       
-      // If JSON parsing fails for other reasons, create structured response
-      analysis = {
-        riskLevel: 'MEDIUM',
-        overallSummary: 'The AI analysis could not be properly parsed, but the document has been reviewed.',
-        keyFindings: [
-          {
-            type: 'OTHER',
-            severity: 'MEDIUM',
-            title: 'Analysis Available',
-            description: analysisText.substring(0, 500) + '...',
-            recommendation: 'Please review the full analysis and consider consulting a legal professional.'
-          }
-        ],
-        redFlags: ['Analysis parsing error - manual review recommended'],
-        positiveAspects: [],
-        simplifiedExplanation: analysisText.substring(0, 300) + '...',
-        actionableAdvice: ['Consider getting professional legal advice for important documents']
-      };
+      // Return a formatted error response
+      return NextResponse.json({
+        error: 'Failed to parse AI response',
+        details: 'The AI returned an invalid response format',
+        rawResponse: analysisText.substring(0, 500) + '...'
+      }, { status: 500 });
     }
 
-    // Add metadata
-    const responseData = {
-      ...analysis,
-      metadata: {
-        sourceType: 'url',
-        sourceUrl: cleanUrl,
-        pageTitle,
-        pageDescription,
-        contentLength: scrapedContent.length,
-        analyzedAt: new Date().toISOString(),
-        model: 'gemini-2.0-flash-exp'
-      }
-    };
+    // Validate the response structure
+    if (!analysisData.overallSummary || !analysisData.riskLevel) {
+      return NextResponse.json({
+        error: 'Invalid analysis format',
+        details: 'The AI response is missing required fields'
+      }, { status: 500 });
+    }
 
-    return NextResponse.json(responseData);
+    console.log('Analysis completed successfully');
+    return NextResponse.json(analysisData);
 
   } catch (error) {
-    console.error('Error analyzing URL:', error);
+    console.error('Error in legal URL analysis:', error);
     
+    if (error.message?.includes('API key')) {
+      return NextResponse.json(
+        { error: 'Invalid API key or API access issue' },
+        { status: 401 }
+      );
+    }
+    
+    if (error.message?.includes('quota')) {
+      return NextResponse.json(
+        { error: 'API quota exceeded. Please try again later.' },
+        { status: 429 }
+      );
+    }
+
     return NextResponse.json(
-      { 
-        error: 'Failed to analyze the URL. Please try again.',
-        details: process.env.NODE_ENV === 'development' ? error.message : undefined
-      },
+      { error: 'Failed to analyze URL', details: error.message },
       { status: 500 }
     );
   }
-}
-
-// Handle unsupported methods
-export async function GET() {
-  return NextResponse.json(
-    { error: 'Method not allowed. Use POST to analyze URLs.' },
-    { status: 405 }
-  );
 }
